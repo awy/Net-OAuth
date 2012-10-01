@@ -106,6 +106,11 @@ AKA Consumer Secret - you get this from the service provider when you register y
 
 =back
 
+If any of the methods get_request_token, get_access_token or Net::OAuth::AccessToken::request
+(returned by authorize_url) are passed a _callback parameter in the %params HASH, then these
+methods will use AnyEvent::HTTP as their client and make an asynchronous request. The callback
+will be passed the token or HTTP::Response as approptiate.
+
 =cut
 
 sub new {
@@ -155,6 +160,36 @@ sub make_oauth_http_request {
   }
   
   return HTTP::Request->new($method => $url, $header, $content);
+}
+
+my $loaded_anyevent_http;
+
+sub make_async_oauth_request {
+  my $self = shift;
+  my ($cb, $method, $oauth_req, $header, $content) = @_;
+  
+  unless ($loaded_anyevent_http) {
+	require AnyEvent::HTTP or croak('Cannot load AnyEvent::HTTP');
+    $loaded_anyevent_http = 1;
+  }
+  
+  my $request = $self->make_oauth_http_request($method, $oauth_req, $header, $content);
+  
+  $header = $request->headers;
+  my %headers;
+  if ($header) {
+	  foreach ($header->header_field_names) {
+	  	my $v = $header->header($_);
+	  	$headers{$_} = $v;
+	  }
+  }
+  
+  AnyEvent::HTTP::http_request $method => $request->uri, headers => \%headers, body => $request->content, sub {
+  	my ($body, $hdr) = @_;
+  	my $response = HTTP::Response->new( $hdr->{Status}, $hdr->{Reason}, [%$hdr], $body );
+  	$response->request($request);
+  	$cb->($response);
+  };
 }
 
 sub _parse_oauth_response {
@@ -211,26 +246,32 @@ sub get_request_token {
     %params
   );
   $oauth_req->sign;
-  my $http_res = $self->request(
-  	$self->make_oauth_http_request($self->request_token_method, $oauth_req)
-  );
-  my $oauth_res = $self->_parse_oauth_response('get a request token', $http_res);
-  $self->is_v1a(0) unless defined $oauth_res->{callback_confirmed};
-  return $oauth_res;
+  
+  my $cb = sub {
+  	my ($http_res) = @_;
+	my $oauth_res = $self->_parse_oauth_response('get a request token', $http_res);
+	$self->is_v1a(0) unless defined $oauth_res->{callback_confirmed};
+	$params{_callback}->($oauth_res) if ($params{_callback});
+	return $oauth_res;
+  };
+  
+  if ($params{_callback}) {
+  	$self->make_async_oauth_request($cb, $self->request_token_method, $oauth_req);
+  } else {
+  	return $cb->($self->request($self->make_oauth_http_request($self->request_token_method, $oauth_req)))
+  }
 }
 
 sub authorize_url {
   my $self = shift;
   my %params = @_;
   
-  my $auth_url = $self->_make_url('authorize');
-  
   # allow user to get request token their own way
   unless (defined $params{token} and defined $params{token_secret}) {
     my $request_token = $self->get_request_token;
     $params{token} = $request_token->{token};
     $params{token_secret} = $request_token->{token_secret};
-    $auth_url = $request_token->{login_url} if $request_token->{login_url};
+    $self->{'authorize_url'} = $request_token->{login_url} if $request_token->{login_url};
   }
   if (defined $self->session) {
     $self->session->($params{token} => $params{token_secret});
@@ -239,7 +280,7 @@ sub authorize_url {
     'user auth',
     %params
   );
-  return $oauth_req->to_url($auth_url);
+  return $oauth_req->to_url($self->_make_url('authorize'));
 }
 
 sub get_access_token {
@@ -261,14 +302,21 @@ sub get_access_token {
     %params
   );
   $oauth_req->sign;
-  
-  my $http_res = $self->request(
-  	$self->make_oauth_http_request($self->access_token_method, $oauth_req)
-  );
 
-  my $oauth_res = $self->_parse_oauth_response('get an access token', $http_res);
+  my $cb = sub {
+  	my ($http_res) = @_;
+	my $oauth_res = $self->_parse_oauth_response('get an access token', $http_res);
+	my $accessToken = Net::OAuth::AccessToken->new(%$oauth_res, client => $self);
+	$params{_callback}->($accessToken) if ($params{_callback});
+	return $accessToken;
+  };
   
-  return Net::OAuth::AccessToken->new(%$oauth_res, client => $self);
+  if ($params{_callback}) {
+  	$self->make_async_oauth_request($cb, $self->access_token_method, $oauth_req);
+  } else {
+  	return $cb->($self->request($self->make_oauth_http_request($self->access_token_method, $oauth_req)))
+  }
+
 }
 
 sub access_token_url {

@@ -2,6 +2,7 @@ package Net::OAuth::AccessToken;
 use warnings;
 use strict;
 use base qw(Class::Accessor::Fast);
+
 __PACKAGE__->mk_accessors(qw/client token token_secret session_handle expires_in authorization_expires_in/);
 
 sub new {
@@ -24,10 +25,16 @@ sub request {
   );
   $oauth_req->sign;
 
-  return $self->client->request(
-    $self->client->make_oauth_http_request(
-      $method, $oauth_req, $header, $content
-  ));
+  if ($params{_callback}) {
+  	$self->client->make_async_oauth_request(
+  		sub {$params{_callback}->(@_);},
+	  	$method, $oauth_req, $header, $content);
+  } else {
+	  return $self->client->request(
+	    $self->client->make_oauth_http_request(
+	      $method, $oauth_req, $header, $content
+	  ));
+  }
 }
 
 sub get {
