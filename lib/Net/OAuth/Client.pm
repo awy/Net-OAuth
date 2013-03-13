@@ -249,7 +249,14 @@ sub get_request_token {
   
   my $cb = sub {
   	my ($http_res) = @_;
-	my $oauth_res = $self->_parse_oauth_response('get a request token', $http_res);
+  	my $oauth_res = eval {$self->_parse_oauth_response('get a request token', $http_res);};
+  	if ($@) {
+  		if ($params{_callback}) {
+  			return $params{_callback}->({error => $@});
+  		} else {
+  			die($@);
+  		}
+  	}
 	$self->is_v1a(0) unless defined $oauth_res->{callback_confirmed};
 	$params{_callback}->($oauth_res) if ($params{_callback});
 	return $oauth_res;
@@ -305,7 +312,14 @@ sub get_access_token {
 
   my $cb = sub {
   	my ($http_res) = @_;
-	my $oauth_res = $self->_parse_oauth_response('get an access token', $http_res);
+	my $oauth_res = eval {$self->_parse_oauth_response('get an access token', $http_res);};
+  	if ($@) {
+  		if ($params{_callback}) {
+  			return $params{_callback}->({error => $@});
+  		} else {
+  			die($@);
+  		}
+  	}
 	my $accessToken = Net::OAuth::AccessToken->new(%$oauth_res, client => $self);
 	$params{_callback}->($accessToken) if ($params{_callback});
 	return $accessToken;
